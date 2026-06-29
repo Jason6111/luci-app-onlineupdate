@@ -3,9 +3,30 @@
 import { ubus } from 'ubus';
 import { request } from 'http';
 import { fs } from 'fs';
+import { exec } from 'process';
 
-const REPO_API =
+const API =
 	'https://api.github.com/repos/huajiaoshu520/X86/releases/latest';
+
+const STATE_FILE = '/tmp/onlineupdate_state.json';
+const FW_FILE = '/tmp/firmware.img.gz';
+
+function load_state() {
+	try {
+		return JSON.parse(fs.readfile(STATE_FILE));
+	} catch {
+		return {
+			file: FW_FILE,
+			url: null,
+			status: 'idle',
+			progress: 0
+		};
+	}
+}
+
+function save_state(st) {
+	fs.writefile(STATE_FILE, JSON.stringify(st));
+}
 
 function get_system_version() {
 	let res = ubus.call('system', 'board', {});
@@ -13,7 +34,7 @@ function get_system_version() {
 }
 
 function fetch_github_release() {
-	let r = request(REPO_API, {
+	let r = request(API, {
 		method: 'GET',
 		headers: {
 			'User-Agent': 'luci-app-onlineupdate'
@@ -26,38 +47,38 @@ function fetch_github_release() {
 	return JSON.parse(r.body);
 }
 
-function pick_firmware_asset(assets) {
+function pick_asset(assets) {
 	if (!assets)
 		return null;
 
-	let priority = [
+	let keys = [
 		'generic-squashfs-combined-efi.img.gz',
 		'combined-efi.img.gz',
 		'efi.img.gz'
 	];
 
-	for (let p of priority) {
+	for (let k of keys) {
 		for (let a of assets) {
-			if (a.name && a.name.indexOf(p) >= 0)
+			if (a.name && a.name.includes(k))
 				return a;
 		}
 	}
 
-	// fallback
 	return assets[0];
 }
 
+/* =========================
+   RPC: 信息
+========================= */
 export function get_info() {
-	let sysver = get_system_version();
 	let rel = fetch_github_release();
-
 	if (!rel)
 		return { error: 'github_failed' };
 
-	let asset = pick_firmware_asset(rel.assets);
+	let asset = pick_asset(rel.assets);
 
 	return {
-		current_version: sysver,
+		current_version: get_system_version(),
 		latest_version: rel.tag_name,
 		body: rel.body,
 		firmware: asset ? {
@@ -68,126 +89,67 @@ export function get_info() {
 	};
 }
 
-export function check() {
-	return get_info();
+/* =========================
+   RPC: 下载
+========================= */
+export function download(url) {
+	let st = load_state();
+
+	st.url = url;
+	st.status = 'downloading';
+	st.progress = 0;
+
+	save_state(st);
+
+	// 后台下载
+	exec(['wget', '-O', FW_FILE, url]);
+
+	return { status: 'started' };
 }
-let download_state = {
-	file: "/tmp/firmware.img.gz",
-	url: null,
-	progress: 0,
-	status: "idle",
-	pid: null
-};
-function download_firmware(url) {
-	if (!url)
-		return { error: "no_url" };
 
-	download_state.url = url;
-	download_state.status = "downloading";
-	download_state.progress = 0;
+/* =========================
+   RPC: 进度
+========================= */
+export function progress() {
+	let st = load_state();
 
-	// 使用 wget（OpenWrt 标准工具）
-	let cmd = [
-		"wget",
-		"-O",
-		download_state.file,
-		url
-	];
+	let f = fs.stat(st.file);
+	if (!f)
+		return { progress: 0, status: st.status };
 
-	let pid = ubus.call("luci", "exec", {
-		command: cmd
-	});
+	// 注意：这里只是“伪进度”，真实 OpenWrt 无法从 wget 拿实时进度
+	st.progress = f.size;
 
-	download_state.pid = pid;
+	save_state(st);
 
 	return {
-		status: "started",
-		file: download_state.file
+		status: st.status,
+		progress: st.progress,
+		file: st.file
 	};
 }
-function get_progress() {
-	try {
-		let st = fs.stat(download_state.file);
 
-		if (!st)
-			return { progress: 0 };
+/* =========================
+   RPC: 升级
+========================= */
+export function upgrade(keep) {
+	let st = load_state();
 
-		let size = st.size;
+	let f = fs.stat(st.file);
+	if (!f)
+		return { error: 'firmware_not_found' };
 
-		// GitHub asset size 在 get_info 已返回
-		let rel = fetch_github_release();
-		let asset = pick_firmware_asset(rel.assets);
+	st.status = 'upgrading';
+	save_state(st);
 
-		let total = asset?.size || 1;
-
-		let percent = Math.floor((size / total) * 100);
-
-		if (percent >= 100)
-			download_state.status = "done";
-
-		return {
-			progress: percent,
-			downloaded: size,
-			total: total,
-			status: download_state.status
-		};
-	}
-	catch (e) {
-		return { progress: 0, error: e };
-	}
-}
-export function download(url) {
-	return download_firmware(url);
-}
-
-export function progress() {
-	return get_progress();
-}
-function do_sysupgrade(keep) {
-	let file = download_state.file;
-
-	// 1. 检查文件是否存在
-	let st = fs.stat(file);
-	if (!st)
-		return { error: "firmware_not_found" };
-
-	// 2. 构造命令
 	let cmd = keep
-		? ["/sbin/sysupgrade", "-c", file]
-		: ["/sbin/sysupgrade", file];
+		? ['sysupgrade', '-c', st.file]
+		: ['sysupgrade', st.file];
 
-	// 3. 标记状态
-	download_state.status = "upgrading";
-
-	// 4. 执行 sysupgrade（OpenWrt 标准方式）
-	let r = ubus.call("luci", "exec", {
-		command: cmd
-	});
+	exec(cmd);
 
 	return {
-		status: "started",
+		status: 'upgrading',
 		keep_config: keep
 	};
-}
-function prepare_upgrade() {
-	if (!download_state.file)
-		return { error: "no_firmware" };
-
-	let st = fs.stat(download_state.file);
-	if (!st || st.size < 1024 * 1024)
-		return { error: "file_too_small" };
-
-	// 确保下载完成
-	if (download_state.status != "done")
-		return { error: "download_not_finished" };
-
-	return { ok: true };
-}
-export function upgrade(keep) {
-	let check = prepare_upgrade();
-
-	if (!check.ok)
-		return check;
-
-	return do_sysupgrade(keep);
 }
