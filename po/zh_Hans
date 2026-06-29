@@ -1,2 +1,29 @@
 msgid "Online Update"
 msgstr "在线升级"
+
+msgid "Current Version"
+msgstr "当前版本"
+
+msgid "Latest Version"
+msgstr "最新版本"
+
+msgid "Firmware"
+msgstr "固件"
+
+msgid "Download"
+msgstr "下载"
+
+msgid "Check Progress"
+msgstr "检查进度"
+
+msgid "Upgrade Now"
+msgstr "立即升级"
+
+msgid "Keep Config"
+msgstr "保留配置"
+
+msgid "No firmware found"
+msgstr "未找到固件"
+
+msgid "Download Progress"
+msgstr "下载进度"
