@@ -143,3 +143,51 @@ export function download(url) {
 export function progress() {
 	return get_progress();
 }
+function do_sysupgrade(keep) {
+	let file = download_state.file;
+
+	// 1. 检查文件是否存在
+	let st = fs.stat(file);
+	if (!st)
+		return { error: "firmware_not_found" };
+
+	// 2. 构造命令
+	let cmd = keep
+		? ["/sbin/sysupgrade", "-c", file]
+		: ["/sbin/sysupgrade", file];
+
+	// 3. 标记状态
+	download_state.status = "upgrading";
+
+	// 4. 执行 sysupgrade（OpenWrt 标准方式）
+	let r = ubus.call("luci", "exec", {
+		command: cmd
+	});
+
+	return {
+		status: "started",
+		keep_config: keep
+	};
+}
+function prepare_upgrade() {
+	if (!download_state.file)
+		return { error: "no_firmware" };
+
+	let st = fs.stat(download_state.file);
+	if (!st || st.size < 1024 * 1024)
+		return { error: "file_too_small" };
+
+	// 确保下载完成
+	if (download_state.status != "done")
+		return { error: "download_not_finished" };
+
+	return { ok: true };
+}
+export function upgrade(keep) {
+	let check = prepare_upgrade();
+
+	if (!check.ok)
+		return check;
+
+	return do_sysupgrade(keep);
+}
