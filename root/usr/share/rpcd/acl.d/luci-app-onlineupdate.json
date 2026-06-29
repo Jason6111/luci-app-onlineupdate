@@ -1,14 +1,9 @@
 {
   "luci-app-onlineupdate": {
-    "description": "Online Update access",
+    "description": "Online update access",
     "read": {
       "ubus": {
         "system": ["board"]
-      }
-    },
-    "write": {
-      "ubus": {
-        "onlineupdate": ["*"]
       }
     }
   }
